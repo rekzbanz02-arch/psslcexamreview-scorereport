@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Private Analytics Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background:#f5f7fa; margin:0; padding:2rem; }
+    h1 { color:#1a2a6c; text-align:center; margin-bottom:1rem; }
+    .summary { display:flex; justify-content:center; flex-wrap:wrap; gap:2rem; margin-bottom:2rem; }
+    .card { background:#fff; border-radius:12px; padding:1rem 2rem; box-shadow:0 2px 8px rgba(0,0,0,.1); text-align:center; width:220px; position:relative; }
+    .card h2 { margin:0; color:#333; font-size:2rem; }
+    .progress-container { width:100%; height:10px; background:#e0e0e0; border-radius:5px; margin-top:8px; overflow:hidden; }
+    .progress-bar { height:10px; width:0; background:linear-gradient(90deg, #4caf50, #81c784); border-radius:5px; transition:width 0.8s ease; }
+    .charts { display:flex; flex-wrap:wrap; justify-content:center; gap:2rem; }
+    canvas { background:#fff; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.1); padding:1rem; }
+    table { width:100%; border-collapse:collapse; margin-top:2rem; background:#fff; border-radius:8px; overflow:hidden; }
+    th, td { padding:0.75rem; border-bottom:1px solid #eee; text-align:left; font-size:0.9rem; }
+    th { background:#f0f0f5; color:#333; }
+    tr:hover { background:#f9f9f9; }
+    .controls { text-align:center; margin-top:2rem; }
+    input[type=number] { padding:0.5rem; width:100px; border-radius:6px; border:1px solid #ccc; margin-right:0.5rem; }
+    button { padding:0.6rem 1rem; border:none; border-radius:6px; background:#1a2a6c; color:white; cursor:pointer; font-weight:600; margin:0.25rem; }
+    button:hover { background:#243b9b; }
+    .danger { background:#b21f1f; }
+    .danger:hover { background:#d23232; }
+  </style>
+</head>
+<body>
+  <h1>Private Analytics Dashboard</h1>
+
+  <div class="summary">
+    <div class="card">
+      <p>Total Visits</p>
+      <h2 id="totalVisits">0</h2>
+    </div>
+    <div class="card">
+      <p>Unique Devices</p>
+      <h2 id="uniqueDevices">0</h2>
+    </div>
+    <div class="card">
+      <p>Bin Usage</p>
+      <h2 id="binUsage">0%</h2>
+      <div class="progress-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <input type="number" id="entriesToDelete" placeholder="No. to delete" min="1">
+    <button onclick="eraseEntries()">🗑️ Erase Entries</button>
+    <button class="danger" onclick="eraseAllLogs()">🔥 Erase All Logs</button>
+  </div>
+
+  <div class="charts">
+    <canvas id="deviceChart" width="350" height="350"></canvas>
+    <canvas id="countryChart" width="400" height="350"></canvas>
+  </div>
+
+  <table id="logTable">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Event</th>
+        <th>Score</th>
+        <th>Filename</th>
+        <th>Timestamp</th>
+        <th>Device Type</th>
+        <th>Platform</th>
+        <th>Browser</th>
+        <th>City</th>
+        <th>Country</th>
+        <th>ISP</th>
+        <th>Latitude</th>
+        <th>Longitude</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+  const MASTER_KEY_CODE = "$2a$10$CvK4w8DTXZ1//5H1cpGQIerIT8Kzvk0FQHosdNm.XS0Q9n6sMmaf6";
+  const BIN_URL_CODE = "https://api.jsonbin.io/v3/b/6912985cd0ea881f40e0cf7c/latest";
+  const MAX_BIN_SIZE = 204800; // ~200 KB limit
+
+  async function loadAnalytics() {
+    try {
+      const res = await fetch(BIN_URL_CODE, { headers: { "X-Master-Key": MASTER_KEY_CODE } });
+      const data = await res.json();
+      const logs = Array.isArray(data.record) ? data.record : (data.record.logs || [data.record]);
+
+      // ---- Summary ----
+      document.getElementById("totalVisits").textContent = logs.length;
+      const uniqueDevices = {};
+      logs.forEach(l => {
+        const d = l.device || {};
+        uniqueDevices[`${d.deviceType || "unknown"}__${d.platform || "unknown"}`] = true;
+      });
+      document.getElementById("uniqueDevices").textContent = Object.keys(uniqueDevices).length;
+
+      // ---- Bin Capacity ----
+      const currentSize = JSON.stringify(logs).length;
+      const usagePercent = ((currentSize / MAX_BIN_SIZE) * 100).toFixed(1);
+      document.getElementById("binUsage").textContent = `${usagePercent}%`;
+
+      const bar = document.getElementById("progressBar");
+      bar.style.width = `${Math.min(usagePercent, 100)}%`;
+      bar.style.background = usagePercent > 85 ? "#e53935" : usagePercent > 60 ? "#fdd835" : "#4caf50";
+
+      // ---- Charts ----
+      const deviceCounts = logs.reduce((acc, l) => {
+        const t = l.device?.deviceType || "Unknown";
+        acc[t] = (acc[t] || 0) + 1;
+        return acc;
+      }, {});
+      new Chart(document.getElementById("deviceChart"), {
+        type: "pie",
+        data: { labels: Object.keys(deviceCounts), datasets: [{ data: Object.values(deviceCounts) }] },
+        options: { plugins: { title: { display: true, text: "Device Type Distribution" } } }
+      });
+
+      const countryCounts = logs.reduce((acc, l) => {
+        const c = l.device?.networkInfo?.country || "Unknown";
+        acc[c] = (acc[c] || 0) + 1;
+        return acc;
+      }, {});
+      const sortedCountries = Object.entries(countryCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
+      new Chart(document.getElementById("countryChart"), {
+        type: "bar",
+        data: { labels: sortedCountries.map(c=>c[0]), datasets: [{ label: "Visits", data: sortedCountries.map(c=>c[1]) }] },
+        options: { plugins: { title: { display: true, text: "Top 5 Countries" } }, scales: { y: { beginAtZero: true } } }
+      });
+
+      // ---- Table ----
+      const tbody = document.querySelector("#logTable tbody");
+      tbody.innerHTML = logs.map((l,i)=>{
+        const d = l.device || {};
+        const n = d.networkInfo || {};
+        const loc = l.location || {};
+        return `
+          <tr>
+            <td>${i+1}</td>
+            <td>${l.event || "N/A"}</td>
+            <td>${l.score || "N/A"}</td>
+            <td>${l.filename || "N/A"}</td>
+            <td>${l.timestamp || "N/A"}</td>
+            <td>${d.deviceType || "?"}</td>
+            <td>${d.platform || "?"}</td>
+            <td>${d.browserVersion || "?"}</td>
+            <td>${n.city || "?"}</td>
+            <td>${n.country || "?"}</td>
+            <td>${n.org || "?"}</td>
+            <td>${loc.latitude || "?"}</td>
+            <td>${loc.longitude || "?"}</td>
+          </tr>`;
+      }).join("");
+
+    } catch (err) {
+      console.error("Dashboard error:", err);
+      document.body.innerHTML = "<h2>❌ Error loading analytics data</h2>";
+    }
+  }
+
+  async function eraseEntries() {
+    const count = parseInt(document.getElementById("entriesToDelete").value);
+    if (isNaN(count) || count < 1) return alert("Enter a valid number of entries to delete.");
+    if (!confirm(`Are you sure you want to delete the last ${count} entries?`)) return;
+
+    try {
+      const res = await fetch(BIN_URL_CODE, { headers: { "X-Master-Key": MASTER_KEY_CODE } });
+      const data = await res.json();
+      const logs = Array.isArray(data.record) ? data.record : (data.record.logs || [data.record]);
+      const updatedLogs = logs.slice(0, Math.max(0, logs.length - count));
+
+      const updateRes = await fetch(BIN_URL_CODE.replace("/latest", ""), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Master-Key": MASTER_KEY_CODE },
+        body: JSON.stringify({ logs: updatedLogs })
+      });
+
+      if (!updateRes.ok) throw new Error("Failed to update bin");
+      alert(`✅ Deleted ${count} entries successfully.`);
+      loadAnalytics();
+    } catch (err) {
+      console.error("Erase error:", err);
+      alert("❌ Error deleting entries. Check console for details.");
+    }
+  }
+
+  async function eraseAllLogs() {
+    const confirmation = prompt("⚠️ This will ERASE ALL analytics logs. Type CONFIRM to proceed:");
+    if (confirmation !== "CONFIRM") return alert("Deletion canceled.");
+
+    try {
+      const updateRes = await fetch(BIN_URL_CODE.replace("/latest", ""), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Master-Key": MASTER_KEY_CODE },
+        body: JSON.stringify({ logs: [] })
+      });
+
+      if (!updateRes.ok) throw new Error("Failed to clear bin");
+      alert("🔥 All logs erased successfully!");
+      loadAnalytics();
+    } catch (err) {
+      console.error("Erase All error:", err);
+      alert("❌ Error clearing bin. Check console for details.");
+    }
+  }
+
+  loadAnalytics();
+  </script>
+</body>
+</html>
